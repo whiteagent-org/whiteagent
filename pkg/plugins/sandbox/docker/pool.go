@@ -63,8 +63,8 @@ type containerPool struct {
 	execTimeout time.Duration
 	stopTimeout time.Duration
 
-	// DooD path translation: replace containerDataDir prefix with hostDataDir
-	// in bind mount source paths. Empty hostDataDir means no translation (dind mode).
+	// Bare-metal path translation: replace containerDataDir prefix with hostDataDir
+	// in bind mount source paths. Empty hostDataDir means no translation (DinD mode).
 	containerDataDir string
 	hostDataDir      string
 
@@ -126,9 +126,9 @@ func bindsMatch(actual, expected []string) bool {
 	return strings.Join(a, "\n") == strings.Join(e, "\n")
 }
 
-// translateMountPaths rewrites mount source paths for DooD mode.
-// When hostDataDir is set, container-side data paths are replaced with
-// host-side paths so the host Docker daemon can resolve them.
+// translateMountPaths rewrites mount source paths when whiteagent shares the
+// host Docker daemon. When hostDataDir is set, container-side data paths are
+// replaced with host-side paths so the host Docker daemon can resolve them.
 func (p *containerPool) translateMountPaths(mounts []port.Mount) []port.Mount {
 	if p.hostDataDir == "" || p.containerDataDir == "" {
 		return mounts

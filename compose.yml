@@ -1,4 +1,5 @@
-# Docker-in-Docker mode with TLS. Sandbox containers run inside the dind daemon.
+# Default deployment: Docker-in-Docker (DinD) mode with TLS.
+# Sandbox containers run inside the dind daemon — fully isolated from the host.
 #
 # Set sandbox.config.network and sandbox.config.services in config.json to
 # create an isolated network inside dind with sidecar services (e.g. browserless).
@@ -7,7 +8,7 @@
 #
 # Setup:
 #   1. Run: make dind-certs
-#   2. Run: docker compose -f compose.dind.yml up -d
+#   2. Run: docker compose up -d
 services:
   whiteagent:
     build:

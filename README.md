@@ -14,9 +14,10 @@ Plugin-driven multi-tenant AI agent runtime. Single Go binary with `.so` plugins
 ## Quick Start
 
 ```bash
-cp config.example.json config.json
+cp config.example.json data/config.json
 cp .env.example .env
-# Edit config.json and .env with your API keys
+# Edit data/config.json and .env with your API keys
+make dind-certs
 docker compose up -d --build
 ```
 
@@ -27,7 +28,7 @@ docker compose up -d --build
 | [CLI Reference](docs/cli.md) | Tenant, agent, user, invite, and workspace commands |
 | [Configuration](docs/configuration.md) | Config sections and environment variable syntax |
 | [Docker Workflows](docs/docker.md) | Running in Docker, common recipes |
-| [Deployment](docs/deployment.md) | DinD, DooD, and bare metal strategies |
+| [Deployment](docs/deployment.md) | DinD (default) and bare metal strategies |
 | [Security Model](docs/security-model.md) | Sandbox hardening and deployment tradeoffs |
 
 ## Development

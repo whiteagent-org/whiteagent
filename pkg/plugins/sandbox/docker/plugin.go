@@ -47,7 +47,7 @@ type dockerSandbox struct {
 	pool        *containerPool
 	state       atomic.Value // entity.PluginState
 	tenantID    entity.TenantID
-	dataBaseDir string // container-side data dir from ScopedFS (for DooD path translation)
+	dataBaseDir string // container-side data dir from ScopedFS (for host-socket path translation)
 	services    []serviceInstance
 }
 

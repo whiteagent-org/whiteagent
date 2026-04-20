@@ -1,7 +1,7 @@
 # Sidecar services that run alongside whiteagent sandbox containers.
 # Sandbox containers reach these services by hostname on the shared network.
-# Used by both DooD and DinD deployment modes, and by the bare-metal strategy
-# when running services separately via: docker compose -f compose.services.yml up -d
+# Used by the DinD deployment (read by the sandbox plugin), and by the bare-metal
+# strategy when running services separately via: docker compose -f compose.services.yml up -d
 # Environment variables are expanded from the host environment.
 services:
   browserless:

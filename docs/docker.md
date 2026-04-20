@@ -1,6 +1,6 @@
 # Docker Workflows
 
-For deployment strategies (DinD, DooD, Bare Metal), see [deployment.md](deployment.md).
+For deployment strategies (DinD and Bare Metal), see [deployment.md](deployment.md).
 
 ## Build and Run
 
