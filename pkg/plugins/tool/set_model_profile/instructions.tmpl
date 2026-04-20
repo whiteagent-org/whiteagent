@@ -1,0 +1,8 @@
+Use set_model_profile to switch to a specialized model profile when the task matches its strengths.
+
+Available profiles:
+{{- range .}}
+- {{.Alias}}: {{.Description}}
+{{- end}}
+
+Call set_model_profile when the task involves multi-step reasoning, calculations, code generation, analysis, or other work that matches a profile's description. For simple replies, greetings, and quick factual answers, use the current model without setting a profile.

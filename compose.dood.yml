@@ -1,0 +1,27 @@
+# Docker-outside-of-Docker (DooD).
+# Mounts the host Docker socket — sandbox containers run as siblings.
+# Requires host_data_dir in sandbox config to match the host-side data path.
+#
+# Set sandbox.config.network and sandbox.config.services in config.json to
+# create an isolated network with sidecar services (e.g. browserless).
+# See compose.services.yml for the services file format.
+#
+# Usage: docker compose -f compose.dood.yml up -d
+services:
+  whiteagent:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./data/config.json:/app/config.json:ro
+      - ./data/data:/app/data
+      - ./data/db:/app/db
+      - ./compose.services.yml:/app/compose.services.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - .env
+    restart: unless-stopped

@@ -1,0 +1,204 @@
+{
+  "runtime": {
+    "logging_level": "info",
+    "shutdown_timeout": "30s",
+    "scheduler_poll_interval": "60s",
+    "timezone": "America/Vancouver",
+    "encryption_key": "env:WHITEAGENT_ENCRYPTION_KEY (openssl rand -hex 32)",
+    "redact_secrets": false,
+    "skills_dir": "./skills/",
+    "data_dir": "./data/"
+  },
+  "gateway": {
+    "address": ":8080",
+    "public_url": ""
+  },
+  "agent": {
+    "max_iterations": 25,
+    "turn_timeout": "60s",
+    "max_workers": 10,
+    "token_budget": 32000
+  },
+  "transport": {
+    "plugin_id": "memory-transport",
+    "path": "./plugins/transport-memory.so",
+    "config": {}
+  },
+  "store": {
+    "plugin_id": "sqlite-store",
+    "path": "./plugins/store-sqlite.so",
+    "config": {
+      "path": "./data/whiteagent.db"
+    }
+  },
+  "sandbox": {
+    "plugin_id": "docker-sandbox",
+    "path": "./plugins/sandbox-docker.so",
+    "config": {
+      "socket_path": "/var/run/docker.sock",
+      "image": "ghcr.io/whiteagent-org/sandbox:latest",
+      "idle_timeout": "15m",
+      "exec_timeout": "5m",
+      "allow_network": true,
+      "network": "sandbox",
+      "services": "./compose.services.yml",
+      "max_output_mb": 1,
+      "stop_timeout": "10s",
+      "host_data_dir": "",
+      "container_uid": 1000,
+      "container_gid": 1000,
+      "user_home_mount": "/home/whiteagent",
+      "tenant_home_mount": "/tenant",
+      "messages_mount": "/messages",
+      "resources": {
+        "cpu_cores": 0.5,
+        "memory_mb": 256,
+        "pids_limit": 100,
+        "tmpfs_mb": 64
+      },
+      "env": {
+        "PLAYWRIGHT_MCP_CDP_ENDPOINT": "ws://browserless:3000"
+      }
+    }
+  },
+  "llm": {
+    "drivers": [
+      {
+        "plugin": {
+          "plugin_id": "openai-llm",
+          "enabled": true,
+          "path": "./plugins/llm-openai_compat.so",
+          "config": null
+        },
+        "endpoints": [
+          {
+            "id": "openai",
+            "enabled": true,
+            "config": {
+              "api_base": "https://api.openai.com/v1",
+              "api_key": "env:OPENAI_API_KEY"
+            }
+          }
+        ]
+      }
+    ],
+    "routing": {
+      "primary": "openai:gpt-4o",
+      "fallback": [],
+      "cooldown_seconds": 30
+    },
+    "compaction": {
+      "model": "openai:gpt-4o-mini",
+      "threshold": 0.9,
+      "preserve_recent_messages": 6
+    }
+  },
+  "channels": [
+    {
+      "plugin_id": "telegram-channel",
+      "enabled": true,
+      "path": "./plugins/channel-telegram.so",
+      "config": {
+        "bot_token": "env:TELEGRAM_BOT_TOKEN"
+      }
+    },
+    {
+      "plugin_id": "teams-channel",
+      "enabled": true,
+      "path": "./plugins/channel-teams.so",
+      "config": {
+        "app_id": "env:TEAMS_APP_ID",
+        "app_password": "env:TEAMS_APP_PASSWORD",
+        "webhook_path": "/channels/teams/webhook",
+        "group_mode": "all"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "plugin_id": "tool.file_read",
+      "enabled": true,
+      "path": "./plugins/tool-file_read.so",
+      "config": {
+        "lines_limit": 1000
+      }
+    },
+    {
+      "plugin_id": "tool.reaction",
+      "enabled": true,
+      "path": "./plugins/tool-reaction.so",
+      "config": null
+    },
+    {
+      "plugin_id": "tool.users_search",
+      "enabled": true,
+      "path": "./plugins/tool-users_search.so",
+      "config": null
+    },
+    {
+      "plugin_id": "tool.groups_search",
+      "enabled": true,
+      "path": "./plugins/tool-groups_search.so",
+      "config": null
+    },
+    {
+      "plugin_id": "tool.web_fetch",
+      "enabled": true,
+      "path": "./plugins/tool-web_fetch.so",
+      "config": {
+        "user_agent": "whiteagent/1.0",
+        "max_chars": 5000,
+        "timeout": "10s"
+      }
+    },
+    {
+      "plugin_id": "tool.web_search",
+      "enabled": true,
+      "path": "./plugins/tool-web_search.so",
+      "config": {
+        "api_key": "env:BRAVE_API_KEY",
+        "timeout": "10s"
+      }
+    },
+    {
+      "plugin_id": "tool.shell",
+      "enabled": true,
+      "path": "./plugins/tool-shell.so",
+      "config": {
+        "max_output_size": 1048576,
+        "timeout": 300
+      }
+    },
+    {
+      "plugin_id": "tool.set_model_profile",
+      "enabled": true,
+      "path": "./plugins/tool-set_model_profile.so",
+      "config": {
+        "models": [
+          {
+            "alias": "reasoning",
+            "description": "Deep reasoning, complex analysis, multi-step problem solving",
+            "endpoints": ["openai:o3"]
+          },
+          {
+            "alias": "coding",
+            "description": "Code generation, debugging, technical implementation",
+            "endpoints": ["openai:o3", "openai:gpt-4o"]
+          }
+        ]
+      }
+    }
+  ],
+  "middleware": [
+    {
+      "plugin_id": "middleware.whisper",
+      "enabled": true,
+      "path": "./plugins/middleware-whisper.so",
+      "config": {
+        "api_base": "https://api.openai.com/v1",
+        "api_key": "env:OPENAI_API_KEY",
+        "model": "whisper-1"
+      }
+    }
+  ]
+}

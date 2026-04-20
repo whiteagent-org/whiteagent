@@ -1,0 +1,49 @@
+# Go binaries and build output
+bin/
+build/
+dist/
+_build/
+tmp/
+/data/
+
+# Go test and coverage artifacts
+*.test
+*.out
+*.coverprofile
+coverage.out
+cover.out
+cpu.prof
+mem.prof
+
+# Go workspace files (usually local-only)
+go.work
+go.work.sum
+.gocache
+.gomodcache
+
+# Docker and local container/dev overrides
+.env
+.env.*
+!.env.example
+docker-compose.override.yml
+docker-compose*.local.yml
+docker/dind-certs/
+*.log
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Enterprise plugin submodules (present only in EE deployments)
+pkg/plugins-*/
+
+# AI tools
+.claude/
+.codex/
+.github/skills/
+.github/prompts/
+.opencode/
+openspec/
+.agents/
+.planning/

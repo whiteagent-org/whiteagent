@@ -1,0 +1,36 @@
+# Sidecar services that run alongside whiteagent sandbox containers.
+# Sandbox containers reach these services by hostname on the shared network.
+# Used by both DooD and DinD deployment modes, and by the bare-metal strategy
+# when running services separately via: docker compose -f compose.services.yml up -d
+# Environment variables are expanded from the host environment.
+services:
+  browserless:
+    image: ghcr.io/browserless/chromium:latest
+    user: "999:999"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      TOKEN: ""
+      CONCURRENT: "5"
+      QUEUED: "10"
+      TIMEOUT: "30000"
+      ALLOW_GET: "false"
+      ALLOW_FILE_PROTOCOL: "false"
+      CORS: "false"
+      HEALTH: "true"
+      DEBUG: "-*"
+    shm_size: 1gb
+    mem_limit: 4g
+    mem_reservation: 2g
+    cpus: 2.0
+    init: true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/config"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    security_opt:
+      - "no-new-privileges:true"
+    tmpfs:
+      - "/tmp:size=512m,exec"
+    restart: unless-stopped

@@ -1,0 +1,58 @@
+# Docker-in-Docker mode with TLS. Sandbox containers run inside the dind daemon.
+#
+# Set sandbox.config.network and sandbox.config.services in config.json to
+# create an isolated network inside dind with sidecar services (e.g. browserless).
+# Sandbox containers join the same network and can reach services by hostname.
+# See compose.services.yml for the services file format.
+#
+# Setup:
+#   1. Run: make dind-certs
+#   2. Run: docker compose -f compose.dind.yml up -d
+services:
+  whiteagent:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./data/config.json:/app/config.json:ro
+      - ./data/data:/app/data
+      - ./data/db:/app/db
+      - ./compose.services.yml:/app/compose.services.yml:ro
+      - ./docker/dind-certs/ca.pem:/certs/ca.pem:ro
+      - ./docker/dind-certs/cert.pem:/certs/cert.pem:ro
+      - ./docker/dind-certs/key.pem:/certs/key.pem:ro
+    environment:
+      - DOCKER_HOST=tcp://dind:2376
+      - DOCKER_TLS_VERIFY=1
+      - DOCKER_CERT_PATH=/certs
+    env_file:
+      - .env
+    depends_on:
+      dind:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dind:
+    image: docker:dind
+    privileged: true
+    volumes:
+      - ./data/data:/app/data
+      - dind-storage:/var/lib/docker
+      - ./docker/dind-certs/ca.pem:/certs/server/ca.pem:ro
+      - ./docker/dind-certs/server-cert.pem:/certs/server/cert.pem:ro
+      - ./docker/dind-certs/server-key.pem:/certs/server/key.pem:ro
+    environment:
+      - DOCKER_TLS_CERTDIR=/certs
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  dind-storage:

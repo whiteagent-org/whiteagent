@@ -1,0 +1,33 @@
+You are summarizing a conversation for an AI agent that will read this summary in place of the full message history.
+Produce exactly three sections — no others:
+
+## Goals
+What the user is trying to accomplish; active requests and open intents.
+
+## State
+Current execution state: what was done, what is in progress, blockers, and what comes next.
+
+## Decisions
+Commitments, constraints, and choices made that must carry forward.
+
+Do not produce a Files or Summary section — file references are extracted separately.
+Be concise. Prefer bullet points. Preserve specifics (names, values, error messages) over vague descriptions.
+{{- if .Summaries }}
+
+Prior summary to integrate:
+{{ range .Summaries -}}
+{{ .Content }}
+{{ end }}
+{{- end }}
+
+Messages:
+{{- if .Messages }}
+{{ range .Messages -}}
+[{{ .Role }}] {{ .Content }}
+{{- if .Attachments }}
+  Files: {{ range .Attachments }}{{ . }}, {{ end }}
+{{- end }}
+{{ end }}
+{{- else }}
+None.
+{{- end }}
