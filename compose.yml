@@ -9,7 +9,7 @@
 # Setup:
 #   1. Run: `make dind-certs`
 #   2. Copy config example `cp config.example.json data/config.json` and adjust as needed.
-#   2. Create .env file with VERSION and PORT variables (optional, defaults shown):
+#   2. Create .env file with variables important for the config.json.
 #   3. Run: `docker compose up -d`
 services:
   whiteagent:
