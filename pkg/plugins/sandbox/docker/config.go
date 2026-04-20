@@ -142,7 +142,7 @@ func (c *dockerConfig) validate() error {
 		}
 	}
 	if c.NetworkMode == "host" && c.HostDataDir != "" {
-		errs = append(errs, fmt.Errorf("network_mode \"host\" is not allowed with host_data_dir (DooD mode): it would expose the host network to sandbox containers"))
+		errs = append(errs, fmt.Errorf("network_mode \"host\" is not allowed with host_data_dir: it would expose the host network to sandbox containers"))
 	}
 	if c.Network != "" && c.NetworkMode != "" {
 		errs = append(errs, fmt.Errorf("network and network_mode are mutually exclusive"))

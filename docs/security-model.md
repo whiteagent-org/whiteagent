@@ -1,48 +1,36 @@
 # Sandbox Security Model
 
-The Docker sandbox plugin runs user code in isolated containers. Multiple deployment strategies are supported with different security tradeoffs. For setup instructions see [deployment.md](deployment.md).
+The Docker sandbox plugin runs user code in isolated containers. For setup instructions see [deployment.md](deployment.md).
 
-## Deployment Modes
+## Deployment Mode
 
-### DooD (Docker-outside-of-Docker) -- Default
+### DinD (Docker-in-Docker) -- Default
 
-**How it works:** The host Docker socket is mounted into the whiteagent container. Sandbox containers run as siblings on the host daemon.
+**How it works:** A separate `docker:dind` sidecar runs its own Docker daemon. Whiteagent connects via TCP with TLS. Sandbox containers are fully nested.
 
-**Setup:** `compose.dood.yml`
-
-**Security characteristics:**
-- Sandbox containers share the host Docker daemon
-- The Docker socket (`/var/run/docker.sock`) is mounted into whiteagent but never into sandbox containers
-- Bind mounts resolve from the host filesystem -- `host_data_dir` must be set to the host-side path of the data directory
-- File ownership: whiteagent (often running as root) creates directories, then chowns them to the configured `container_uid`/`container_gid` so the sandbox user can write. Files created by the sandbox are owned by the configured UID.
-
-**Risks:**
-- Anyone with access to the Docker socket has root-equivalent access on the host
-- Container UID maps directly to host UID (e.g., UID 1000 in sandbox = UID 1000 on host)
-
-**Mitigation:** Enable Docker user namespace remapping (`userns-remap`) at the daemon level for full UID isolation.
-
-### DinD (Docker-in-Docker)
-
-**How it works:** A separate `docker:dind` sidecar runs its own Docker daemon. Whiteagent connects via TCP. Sandbox containers are fully nested.
-
-**Setup:** `compose.dind.yml`
+**Setup:** `compose.yml`
 
 **Security characteristics:**
 - Sandbox containers are isolated from the host Docker daemon entirely
 - UIDs inside the dind VM have no mapping to host UIDs
 - Path traversal attacks are contained within the dind shared volume
 - No host socket exposure -- even a container escape only reaches the dind daemon
+- TLS is enforced on the internal TCP connection via `DOCKER_TLS_CERTDIR=/certs`
 
 **Risks:**
 - The dind sidecar runs with `privileged: true` (required for nested Docker). If an attacker escapes from a sandbox into the dind container, they have full host capabilities.
-- `DOCKER_TLS_CERTDIR=` disables TLS on the internal TCP connection. Any container on the compose network could reach the dind daemon at `tcp://docker:2375`.
 
-**Mitigation:** For production, enable TLS by setting `DOCKER_TLS_CERTDIR=/certs` and sharing a certs volume between the app and dind containers.
+### Bare Metal (Development)
 
-**DinD is more secure than DooD** for sandbox isolation because it provides full UID isolation, filesystem containment, and no host socket exposure.
+**How it works:** The binary runs directly on the host and uses the host Docker socket to launch sandbox containers as siblings.
 
-## Container Hardening (Both Modes)
+**Risks:**
+- Anyone with access to the Docker socket has root-equivalent access on the host
+- Container UID maps directly to host UID (e.g., UID 1000 in sandbox = UID 1000 on host)
+
+**Mitigation:** Enable Docker [user namespace remapping](https://docs.docker.com/engine/security/userns-remap/) at the daemon level for full UID isolation. Only recommended for development.
+
+## Container Hardening
 
 Every sandbox container is created with:
 
@@ -75,4 +63,4 @@ Sandbox config fields with security implications (`config.json` > `sandbox` > `c
 | `resources.tmpfs_mb` | `64` | Tmpfs size for /tmp, /var/tmp, /message |
 | `exec_timeout` | `5m` | Per-command execution timeout |
 | `idle_timeout` | `15m` | Container recycled after inactivity |
-| `host_data_dir` | `""` | Required for DooD: host path to data directory |
+| `host_data_dir` | `""` | Required for bare-metal mode: host path to data directory. Empty for DinD. |
