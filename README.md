@@ -15,7 +15,7 @@ Plugin-driven multi-tenant AI agent runtime. Single Go binary with `.so` plugins
 
 ```bash
 cp config.example.json data/config.json
-cp .env.example .env
+touch .env
 # Edit data/config.json and .env with your API keys
 make dind-certs
 docker compose up -d --build
