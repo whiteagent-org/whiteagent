@@ -1,7 +1,12 @@
 name: Release
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version in x.x.x form (with or without leading v). Leave blank to auto-bump patch from latest release tag.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -24,16 +29,52 @@ jobs:
 
       - name: Compute version
         id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          DATE=$(date -u +%Y.%m.%d)
-          SEQ=1
-          for tag in $(git tag -l "v${DATE}.*"); do
-            N=${tag##*.}
-            if [ "$N" -ge "$SEQ" ]; then
-              SEQ=$((N + 1))
+          set -euo pipefail
+
+          strip_v() {
+            local s="$1"
+            while [[ "$s" == v* ]]; do s="${s#v}"; done
+            echo "$s"
+          }
+
+          validate() {
+            if [[ ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid version: '$1' (must be X.Y.Z[-suffix][+build])" >&2
+              exit 1
             fi
-          done
-          VERSION="v${DATE}.${SEQ}"
+          }
+
+          last_tag() {
+            gh release view --repo "${GITHUB_REPOSITORY}" --json tagName -q .tagName 2>/dev/null \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true
+          }
+
+          bump_patch() {
+            local base="$1"
+            IFS=. read -r maj min pat <<<"$base"
+            echo "${maj}.${min}.$((pat + 1))"
+          }
+
+          if [[ -z "$INPUT_VERSION" ]]; then
+            base="$(last_tag)"
+            if [[ -z "$base" ]]; then
+              version="0.1.0"
+            else
+              version="$(bump_patch "${base#v}")"
+            fi
+          else
+            version="$(strip_v "$INPUT_VERSION")"
+          fi
+
+          validate "$version"
+
+          VERSION="v${version}"
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Computed version: $VERSION"
 
