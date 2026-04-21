@@ -275,8 +275,13 @@ func TestTick_SyntheticMessageFields(t *testing.T) {
 	if msg.IsGroup {
 		t.Error("cron session should not be a group")
 	}
-	if msg.ConversationID != "conv-orig-1" {
-		t.Errorf("expected ConversationID=conv-orig-1, got %s", msg.ConversationID)
+	// Recurring entries get a fresh ConversationID each firing, distinct from the
+	// conversation stored on the entry.
+	if msg.ConversationID.IsEmpty() {
+		t.Error("expected non-empty ConversationID for recurring firing")
+	}
+	if msg.ConversationID == "conv-orig-1" {
+		t.Errorf("recurring firing should get a fresh ConversationID, got stored %s", msg.ConversationID)
 	}
 
 	// Message fields
@@ -337,8 +342,13 @@ func TestTick_RoutingFieldsPropagated(t *testing.T) {
 	if !msg.IsGroup {
 		t.Error("expected IsGroup=true")
 	}
-	if msg.ConversationID != "conv-abc" {
-		t.Errorf("ConversationID = %q, want %q", msg.ConversationID, "conv-abc")
+	// Recurring entries get a fresh ConversationID each firing, distinct from
+	// entry.ConversationID ("conv-abc").
+	if msg.ConversationID.IsEmpty() {
+		t.Error("expected non-empty ConversationID for recurring firing")
+	}
+	if msg.ConversationID == "conv-abc" {
+		t.Errorf("recurring firing should get a fresh ConversationID, got stored %q", msg.ConversationID)
 	}
 }
 
@@ -565,5 +575,46 @@ func TestTick_NilScopedFS_SkipsAttachments(t *testing.T) {
 	}
 	if len(transport.messages[0].Attachments) != 0 {
 		t.Errorf("expected no attachments with nil ScopedFS, got %d", len(transport.messages[0].Attachments))
+	}
+}
+
+func TestTick_OneShotPreservesConversationID(t *testing.T) {
+	entry := dueEntry("once")
+	entry.ConversationID = "conv-once-1"
+	store := &mockStore{entries: []entity.CronEntry{entry}}
+	transport := &mockTransport{}
+	s := New(store, transport, nil, time.Minute, "UTC")
+	s.tick(context.Background(), fixedNow())
+
+	if len(transport.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(transport.messages))
+	}
+	if got := transport.messages[0].ConversationID; got != "conv-once-1" {
+		t.Errorf("one-shot firing should preserve entry.ConversationID, got %q want %q", got, "conv-once-1")
+	}
+}
+
+func TestTick_RecurringFreshConversationEachFiring(t *testing.T) {
+	store := &mockStore{entries: []entity.CronEntry{dueEntry("recurring")}}
+	transport := &mockTransport{}
+	s := New(store, transport, nil, time.Minute, "UTC")
+
+	// Two ticks back-to-back: the mock store does not advance NextRunAt on the
+	// returned entry, so both ticks fire the same recurring entry.
+	s.tick(context.Background(), fixedNow())
+	s.tick(context.Background(), fixedNow())
+
+	if len(transport.messages) != 2 {
+		t.Fatalf("expected 2 messages across two firings, got %d", len(transport.messages))
+	}
+	a, b := transport.messages[0].ConversationID, transport.messages[1].ConversationID
+	if a.IsEmpty() || b.IsEmpty() {
+		t.Fatalf("both firings must have non-empty ConversationID, got %q and %q", a, b)
+	}
+	if a == b {
+		t.Errorf("recurring firings must produce distinct ConversationIDs, got %q twice", a)
+	}
+	if a == "conv-orig-1" || b == "conv-orig-1" {
+		t.Errorf("recurring firings must not reuse entry.ConversationID %q, got (%q, %q)", "conv-orig-1", a, b)
 	}
 }

@@ -165,6 +165,13 @@ func (s *Scheduler) fireEntry(ctx context.Context, entry entity.CronEntry, now t
 
 	// 3. Build synthetic message with ChatID only. Delivery is resolved from
 	// the chat entity at runtime by the outbound handler / mapper.
+	// Recurring entries get a fresh ConversationID per firing so each run is its
+	// own isolated session; one-shot entries keep the original conversation so
+	// the reminder lands in the context where the user created it.
+	convID := entry.ConversationID
+	if entry.Type == "recurring" {
+		convID = entity.ConversationID(util.NewID())
+	}
 	msg := entity.Message{
 		ID:             entity.MessageID(util.NewID()),
 		TenantID:       entry.TenantID,
@@ -176,7 +183,7 @@ func (s *Scheduler) fireEntry(ctx context.Context, entry entity.CronEntry, now t
 		Role:           entity.RoleUser,
 		Content:        entry.Instructions,
 		Metadata:       entry.MessageMetadata(),
-		ConversationID: entry.ConversationID,
+		ConversationID: convID,
 		CreatedAt:      now,
 	}
 
