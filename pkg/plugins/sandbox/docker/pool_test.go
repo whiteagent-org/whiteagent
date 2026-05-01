@@ -239,16 +239,16 @@ func TestPoolEnsureHardenedDefaults(t *testing.T) {
 	if msgOpt := req.HostConfig.Tmpfs["/message"]; !strings.Contains(msgOpt, "uid=1000") || !strings.Contains(msgOpt, "mode=0700") {
 		t.Errorf("Tmpfs[/message] = %q, want uid=1000,mode=0700", msgOpt)
 	}
-	if len(req.HostConfig.Ulimits) != 2 {
-		t.Errorf("Ulimits count = %d, want 2", len(req.HostConfig.Ulimits))
+	// nproc ulimit is intentionally NOT set: RLIMIT_NPROC is per-UID and
+	// system-wide, so it collides with other processes running as the same
+	// container UID on the host. PidsLimit (cgroup pids.max) provides the
+	// per-container process bound instead.
+	if len(req.HostConfig.Ulimits) != 1 {
+		t.Errorf("Ulimits count = %d, want 1", len(req.HostConfig.Ulimits))
 	} else {
 		nofile := req.HostConfig.Ulimits[0]
 		if nofile.Name != "nofile" || nofile.Soft != 1024 || nofile.Hard != 2048 {
 			t.Errorf("Ulimits[nofile] = %+v, want {nofile 1024 2048}", nofile)
-		}
-		nproc := req.HostConfig.Ulimits[1]
-		if nproc.Name != "nproc" || nproc.Soft != 100 || nproc.Hard != 100 {
-			t.Errorf("Ulimits[nproc] = %+v, want {nproc 100 100}", nproc)
 		}
 	}
 	if req.HostConfig.NanoCpus != 500000000 {
