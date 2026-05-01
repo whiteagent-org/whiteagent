@@ -241,7 +241,6 @@ func (p *containerPool) ensure(ctx context.Context, userID entity.UserID, tenant
 			PidsLimit:      &pidsLimit,
 			Ulimits: []ulimit{
 				{Name: "nofile", Soft: 1024, Hard: 2048},
-				{Name: "nproc", Soft: int64(p.cfg.Resources.PidsLimit), Hard: int64(p.cfg.Resources.PidsLimit)},
 			},
 			Tmpfs: map[string]string{
 				"/tmp":     tmpfsOpt,
