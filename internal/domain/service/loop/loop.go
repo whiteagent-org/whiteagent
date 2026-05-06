@@ -290,7 +290,6 @@ func (l *Loop) runTurn(ctx context.Context, inbound entity.Message) error {
 	var lastContent string
 	resolvedAgentID := agent.ID
 	inboundID := inbound.ID // UUIDv7 — lexicographic boundary for history fetch
-	ephemeralResultIDs := make([]entity.MessageID, 0, 4)
 	compactionTriggeredThisTurn := false
 	for i := 0; i < l.cfg.MaxIterations; i++ {
 		slog.Info("agent.turn.llm_call", "iteration", i+1, "chat_id", inbound.ChatID)
@@ -422,11 +421,6 @@ func (l *Loop) runTurn(ctx context.Context, inbound entity.Message) error {
 			if err := l.transport.Publish(context.WithoutCancel(ctx), entity.TopicOutbound, assistantMsg); err != nil {
 				return err
 			}
-			if len(ephemeralResultIDs) > 0 {
-				if err := l.store.EvictMessages(context.WithoutCancel(ctx), inbound.TenantID, convID, ephemeralResultIDs); err != nil {
-					return err
-				}
-			}
 			return nil
 		}
 
@@ -434,23 +428,11 @@ func (l *Loop) runTurn(ctx context.Context, inbound entity.Message) error {
 		results := l.executeToolsParallel(ctx, inbound, resp.ToolCalls, convID)
 
 		// Save tool results to conversation history.
-		// By default all tool results are evicted after the reply; tools implementing
-		// EphemeralTool and returning false opt out to keep their results in context.
 		for _, result := range results {
 			result.AgentID = resolvedAgentID
-			shouldEvict := true
-			if tool, ok := l.tools[result.ToolName]; ok {
-				if et, ok := tool.(port.EphemeralTool); ok && !et.IsEphemeral() {
-					shouldEvict = false
-				}
-			}
-			result.Ephemeral = shouldEvict
 			if err := l.convService.Append(context.WithoutCancel(ctx), convID, result); err != nil {
 				slog.Error("agent.turn.append_tool_result_error", "err", err)
 				return l.publishResponse(ctx, inbound, "Internal error: unable to save tool result.")
-			}
-			if shouldEvict {
-				ephemeralResultIDs = append(ephemeralResultIDs, result.ID)
 			}
 		}
 	}

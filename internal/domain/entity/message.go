@@ -62,7 +62,6 @@ type Message struct {
 	Attachments    []Attachment
 	IsMention      bool
 	Evicted        bool // true when message has been evicted from active context
-	Ephemeral      bool // true when this message will be auto-evicted after the reply; not stored in DB
 	Metadata       map[string]string
 	CreatedAt      time.Time
 }
