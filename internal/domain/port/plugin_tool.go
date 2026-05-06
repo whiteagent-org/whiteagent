@@ -33,11 +33,3 @@ type ToolPlugin interface {
 	Instructions() string        // Embedded instructions template text injected into system prompt
 	Execute(ctx context.Context, tc ToolContext, args json.RawMessage) (string, error)
 }
-
-// EphemeralTool may be implemented by a ToolPlugin to control whether its
-// result messages are auto-evicted after the reply is sent.
-// By default (no interface), all tool results are evicted post-reply.
-// Implement IsEphemeral() returning false to opt out and keep results in context.
-type EphemeralTool interface {
-	IsEphemeral() bool
-}

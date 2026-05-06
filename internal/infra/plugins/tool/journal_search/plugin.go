@@ -41,7 +41,6 @@ func (p *Plugin) Init(_ context.Context, id string, _ json.RawMessage) error {
 }
 func (p *Plugin) Start(_ context.Context) error { return nil }
 func (p *Plugin) Stop(_ context.Context) error  { return nil }
-func (p *Plugin) IsEphemeral() bool             { return false }
 
 // SetStore injects the store dependency.
 func (p *Plugin) SetStore(s port.StorePlugin) { p.store = s }

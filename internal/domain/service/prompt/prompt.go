@@ -754,10 +754,6 @@ func buildContextBlock(msg entity.Message, userNames map[entity.UserID]string, m
 		xb.SelfCloseTag("wa_msg_context", attrs...)
 		return xb.String() + "\n\n"
 	}
-	if msg.Ephemeral {
-		attrs = append(attrs, xml.Attr{Key: "ephemeral", Value: ""})
-	}
-
 	xb := xml.NewBuilder()
 	if len(msg.Attachments) == 0 {
 		xb.SelfCloseTag("wa_msg_context", attrs...)

@@ -3,7 +3,6 @@ package loop
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -71,10 +70,6 @@ type mockStorePlugin struct {
 	errorLogs        []entity.ErrorLogEntry
 	appendErrorLogFn func(entity.ErrorLogEntry) error
 	capturedAgentID  entity.AgentID // last AgentID passed to GetAgent
-	evictTenantID    entity.TenantID
-	evictConvID      entity.ConversationID
-	evictMessageIDs  []entity.MessageID
-	evictCalls       int
 }
 
 func (m *mockStorePlugin) ID() string                                          { return "store.mock" }
@@ -109,11 +104,7 @@ func (m *mockStorePlugin) AppendErrorLog(_ context.Context, _ entity.TenantID, e
 	return nil
 }
 
-func (m *mockStorePlugin) EvictMessages(_ context.Context, tenantID entity.TenantID, convID entity.ConversationID, msgIDs []entity.MessageID) error {
-	m.evictCalls++
-	m.evictTenantID = tenantID
-	m.evictConvID = convID
-	m.evictMessageIDs = append([]entity.MessageID(nil), msgIDs...)
+func (m *mockStorePlugin) EvictMessages(_ context.Context, _ entity.TenantID, _ entity.ConversationID, _ []entity.MessageID) error {
 	return nil
 }
 
@@ -556,71 +547,6 @@ func (m *toolThenFinalCompletionService) Complete(_ context.Context, _ port.Comp
 	return &port.CompletionResponse{Content: "done"}, nil
 }
 
-type toolThenErrorCompletionService struct {
-	calls     atomic.Int32
-	toolCalls []entity.ToolCall
-}
-
-func (m *toolThenErrorCompletionService) Complete(_ context.Context, _ port.CompletionRequest) (*port.CompletionResponse, error) {
-	if m.calls.Add(1) == 1 {
-		return &port.CompletionResponse{
-			Content:   "calling tool",
-			ToolCalls: m.toolCalls,
-		}, nil
-	}
-	return nil, errors.New("model unavailable after tool result")
-}
-
-type toolThenTimeoutCompletionService struct {
-	calls     atomic.Int32
-	toolCalls []entity.ToolCall
-}
-
-func (m *toolThenTimeoutCompletionService) Complete(ctx context.Context, _ port.CompletionRequest) (*port.CompletionResponse, error) {
-	if m.calls.Add(1) == 1 {
-		return &port.CompletionResponse{
-			Content:   "calling tool",
-			ToolCalls: m.toolCalls,
-		}, nil
-	}
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
-type ephemeralTool struct{}
-
-func (m *ephemeralTool) ID() string                                          { return "ephemeral_tool" }
-func (m *ephemeralTool) Kind() entity.PluginKind                             { return entity.PluginKindTool }
-func (m *ephemeralTool) Init(context.Context, string, json.RawMessage) error { return nil }
-func (m *ephemeralTool) Start(context.Context) error                         { return nil }
-func (m *ephemeralTool) Stop(context.Context) error                          { return nil }
-func (m *ephemeralTool) Status() entity.PluginState                          { return entity.PluginStateHealthy }
-func (m *ephemeralTool) Name() string                                        { return "ephemeral_tool" }
-func (m *ephemeralTool) Description() string                                 { return "ephemeral tool" }
-func (m *ephemeralTool) Parameters() json.RawMessage                         { return json.RawMessage("{}") }
-func (m *ephemeralTool) Instructions() string                                { return "" }
-func (m *ephemeralTool) Execute(context.Context, port.ToolContext, json.RawMessage) (string, error) {
-	return "ephemeral result", nil
-}
-func (m *ephemeralTool) IsEphemeral() bool { return true }
-
-type nonEphemeralTool struct{}
-
-func (m *nonEphemeralTool) ID() string                                          { return "non_ephemeral_tool" }
-func (m *nonEphemeralTool) Kind() entity.PluginKind                             { return entity.PluginKindTool }
-func (m *nonEphemeralTool) Init(context.Context, string, json.RawMessage) error { return nil }
-func (m *nonEphemeralTool) Start(context.Context) error                         { return nil }
-func (m *nonEphemeralTool) Stop(context.Context) error                          { return nil }
-func (m *nonEphemeralTool) Status() entity.PluginState                          { return entity.PluginStateHealthy }
-func (m *nonEphemeralTool) Name() string                                        { return "non_ephemeral_tool" }
-func (m *nonEphemeralTool) Description() string                                 { return "non-ephemeral tool" }
-func (m *nonEphemeralTool) Parameters() json.RawMessage                         { return json.RawMessage("{}") }
-func (m *nonEphemeralTool) Instructions() string                                { return "" }
-func (m *nonEphemeralTool) Execute(context.Context, port.ToolContext, json.RawMessage) (string, error) {
-	return "persistent result", nil
-}
-func (m *nonEphemeralTool) IsEphemeral() bool { return false }
-
 func TestToolContextConversation(t *testing.T) {
 	ct := &capturingTool{}
 	tools := map[string]port.ToolPlugin{"capturing_tool": ct}
@@ -652,159 +578,3 @@ func TestToolContextConversation(t *testing.T) {
 	}
 }
 
-func newEphemeralLoop(t *testing.T, cfg LoopConfig, completion llm.CompletionService, store *mockStorePlugin, conv *mockConvService, transport *mockTransport, tools map[string]port.ToolPlugin) *Loop {
-	t.Helper()
-	pb, err := prompt.NewPromptBuilder(nil, nil, nil, nil, 32000, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("NewPromptBuilder: %v", err)
-	}
-	return NewLoop(cfg, completion, store, conv, transport, tools, pb, nil, map[string]port.ChannelEntry{}, &noopSecretService{}, nil, nil)
-}
-
-func toolResultIDByName(t *testing.T, conv *mockConvService, toolName string) entity.MessageID {
-	t.Helper()
-	for _, msg := range conv.appended {
-		if msg.Role == entity.RoleTool && msg.ToolName == toolName {
-			return msg.ID
-		}
-	}
-	t.Fatalf("missing tool result for %s", toolName)
-	return ""
-}
-
-func finalAssistantID(t *testing.T, conv *mockConvService) entity.MessageID {
-	t.Helper()
-	for i := len(conv.appended) - 1; i >= 0; i-- {
-		msg := conv.appended[i]
-		if msg.Role == entity.RoleAssistant && len(msg.ToolCalls) == 0 {
-			return msg.ID
-		}
-	}
-	t.Fatal("missing final assistant message")
-	return ""
-}
-
-func TestEphemeralToolResultsEvictedAfterSuccessfulPublish(t *testing.T) {
-	store := &mockStorePlugin{}
-	conv := &mockConvService{}
-	transport := &mockTransport{}
-	completion := &toolThenFinalCompletionService{
-		toolCalls: []entity.ToolCall{
-			{ID: "tc-ephemeral", Name: "ephemeral_tool", Arguments: "{}"},
-			{ID: "tc-persistent", Name: "non_ephemeral_tool", Arguments: "{}"},
-		},
-	}
-	tools := map[string]port.ToolPlugin{
-		"ephemeral_tool":     &ephemeralTool{},
-		"non_ephemeral_tool": &nonEphemeralTool{},
-	}
-	cfg := LoopConfig{MaxIterations: 5, TurnTimeout: 5 * time.Second, MaxWorkers: 2}
-	l := newEphemeralLoop(t, cfg, completion, store, conv, transport, tools)
-
-	msg := testMsg("ch1")
-	if err := l.Handle(context.Background(), msg); err != nil {
-		t.Fatalf("Handle returned error: %v", err)
-	}
-
-	ephemeralResultID := toolResultIDByName(t, conv, "ephemeral_tool")
-	persistentResultID := toolResultIDByName(t, conv, "non_ephemeral_tool")
-	assistantID := finalAssistantID(t, conv)
-
-	if store.evictCalls != 1 {
-		t.Fatalf("evictCalls = %d, want 1", store.evictCalls)
-	}
-	if store.evictTenantID != "t1" {
-		t.Fatalf("evict tenant = %q, want %q", store.evictTenantID, "t1")
-	}
-	if store.evictConvID != "conv-test" {
-		t.Fatalf("evict conversation = %q, want %q", store.evictConvID, "conv-test")
-	}
-	if len(store.evictMessageIDs) != 1 {
-		t.Fatalf("evicted msgIDs = %v, want exactly one tool-result ID", store.evictMessageIDs)
-	}
-	if got := store.evictMessageIDs[0]; got != ephemeralResultID {
-		t.Fatalf("evicted msgID = %q, want ephemeral tool result %q", got, ephemeralResultID)
-	}
-	if store.evictMessageIDs[0] == msg.ID {
-		t.Fatalf("evicted inbound message ID %q instead of tool result", msg.ID)
-	}
-	if store.evictMessageIDs[0] == assistantID {
-		t.Fatalf("evicted final assistant message ID %q instead of tool result", assistantID)
-	}
-	if store.evictMessageIDs[0] == persistentResultID {
-		t.Fatalf("evicted non-ephemeral tool result ID %q", persistentResultID)
-	}
-	if len(transport.publishedTopics) != 1 || transport.publishedTopics[0] != entity.TopicOutbound {
-		t.Fatalf("published topics = %v, want [%s]", transport.publishedTopics, entity.TopicOutbound)
-	}
-}
-
-func TestEphemeralToolResultsPreservedOnLLMError(t *testing.T) {
-	store := &mockStorePlugin{}
-	conv := &mockConvService{}
-	transport := &mockTransport{}
-	completion := &toolThenErrorCompletionService{
-		toolCalls: []entity.ToolCall{
-			{ID: "tc-ephemeral", Name: "ephemeral_tool", Arguments: "{}"},
-		},
-	}
-	tools := map[string]port.ToolPlugin{
-		"ephemeral_tool": &ephemeralTool{},
-	}
-	cfg := LoopConfig{MaxIterations: 5, TurnTimeout: 5 * time.Second, MaxWorkers: 2}
-	l := newEphemeralLoop(t, cfg, completion, store, conv, transport, tools)
-
-	if err := l.Handle(context.Background(), testMsg("ch1")); err != nil {
-		t.Fatalf("Handle returned error: %v", err)
-	}
-	if store.evictCalls != 0 {
-		t.Fatalf("evictCalls = %d, want 0", store.evictCalls)
-	}
-}
-
-func TestEphemeralToolResultsPreservedOnTimeout(t *testing.T) {
-	store := &mockStorePlugin{}
-	conv := &mockConvService{}
-	transport := &mockTransport{}
-	completion := &toolThenTimeoutCompletionService{
-		toolCalls: []entity.ToolCall{
-			{ID: "tc-ephemeral", Name: "ephemeral_tool", Arguments: "{}"},
-		},
-	}
-	tools := map[string]port.ToolPlugin{
-		"ephemeral_tool": &ephemeralTool{},
-	}
-	cfg := LoopConfig{MaxIterations: 5, TurnTimeout: 50 * time.Millisecond, MaxWorkers: 2}
-	l := newEphemeralLoop(t, cfg, completion, store, conv, transport, tools)
-
-	if err := l.Handle(context.Background(), testMsg("ch1")); err != nil {
-		t.Fatalf("Handle returned error: %v", err)
-	}
-	if store.evictCalls != 0 {
-		t.Fatalf("evictCalls = %d, want 0", store.evictCalls)
-	}
-}
-
-func TestEphemeralToolResultsPreservedOnPublishError(t *testing.T) {
-	store := &mockStorePlugin{}
-	conv := &mockConvService{}
-	transport := &mockTransport{publishErr: errors.New("publish failed")}
-	completion := &toolThenFinalCompletionService{
-		toolCalls: []entity.ToolCall{
-			{ID: "tc-ephemeral", Name: "ephemeral_tool", Arguments: "{}"},
-		},
-	}
-	tools := map[string]port.ToolPlugin{
-		"ephemeral_tool": &ephemeralTool{},
-	}
-	cfg := LoopConfig{MaxIterations: 5, TurnTimeout: 5 * time.Second, MaxWorkers: 2}
-	l := newEphemeralLoop(t, cfg, completion, store, conv, transport, tools)
-
-	err := l.Handle(context.Background(), testMsg("ch1"))
-	if err == nil {
-		t.Fatal("expected publish error")
-	}
-	if store.evictCalls != 0 {
-		t.Fatalf("evictCalls = %d, want 0", store.evictCalls)
-	}
-}
