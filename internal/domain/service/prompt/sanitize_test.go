@@ -57,6 +57,46 @@ func TestStripContextBlocksIgnoresGenericContext(t *testing.T) {
 	}
 }
 
+func TestStripContextBlocksUnclosedOpenerAtStart(t *testing.T) {
+	input := `<wa_msg_context msg_id="019e0017-63c2-7522-8f52-8448b9476b04" ts="2026-05-07T01:39:53Z" reply_to="019e0015-5d3d-7506-97ab-407acccbf11f">
+
+Done! I've marked 4 of the 2022 tasks as completed:`
+	got := StripContextBlocks(input)
+	want := "Done! I've marked 4 of the 2022 tasks as completed:"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestStripContextBlocksUnclosedOpenerInMiddle(t *testing.T) {
+	input := `Before <wa_msg_context msg_id="x" ts="2026-05-07T01:39:53Z"> After`
+	got := StripContextBlocks(input)
+	want := "Before After"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestStripContextBlocksMixedSelfCloseAndUnclosedOpener(t *testing.T) {
+	input := `<wa_msg_context msg_id="a"/> hello <wa_msg_context msg_id="b"> world`
+	got := StripContextBlocks(input)
+	want := "hello world"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestStripContextBlocksPairedSurvivesSecondPass(t *testing.T) {
+	// Ensures the bare-opener pass doesn't eat the open half of a valid pair —
+	// the paired-block pass must consume it first.
+	input := `<wa_msg_context msg_id="a"><attachment idx="0"/></wa_msg_context>Hello`
+	got := StripContextBlocks(input)
+	want := "Hello"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestStripThinkingBlocks(t *testing.T) {
 	tests := []struct {
 		name  string

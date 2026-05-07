@@ -415,7 +415,7 @@ func TestCompactionSuppressesDuplicateLaunchesAndClearsInFlight(t *testing.T) {
 
 func TestCompactionTriggersAfterLaterToolResults(t *testing.T) {
 	conv := &historyConvService{resolveID: "conv-test"}
-	pb := newCompactionPromptBuilder(t, conv, 15000, 0.26)
+	pb := newCompactionPromptBuilder(t, conv, 18000, 0.26)
 	store := &compactionStoreSpy{savedSummaryCh: make(chan struct{}, 1)}
 	compactionCompletion := &blockingCompactionCompletion{
 		content: "## Goals\nDone.\n\n## Files\nNone.\n\n## State\nDone.\n\n## Decisions\nDone.",

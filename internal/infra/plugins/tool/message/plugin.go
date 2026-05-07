@@ -4,16 +4,12 @@ package message
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 
 	"github.com/whiteagent-org/whiteagent/internal/domain/entity"
 	"github.com/whiteagent-org/whiteagent/internal/domain/port"
 )
-
-//go:embed instructions.tmpl
-var instructionsText string
 
 // Plugin implements port.ToolPlugin for sending messages to chats.
 type Plugin struct {
@@ -55,7 +51,7 @@ func (p *Plugin) Name() string { return "message" }
 
 // Description returns a human-readable description for the LLM.
 func (p *Plugin) Description() string {
-	return "Sends a message to a chat (DM or group)."
+	return "Sends a message to a chat — to the current chat for mid-turn updates, or to another chat by ID."
 }
 
 // Parameters returns the JSON Schema describing tool parameters.
@@ -64,7 +60,8 @@ func (p *Plugin) Parameters() json.RawMessage {
 }
 
 // Instructions returns embedded instructions template text for the system prompt.
-func (p *Plugin) Instructions() string { return instructionsText }
+// Empty: usage policy lives in the system prompt's `## Messages` section.
+func (p *Plugin) Instructions() string { return "" }
 
 type messageArgs struct {
 	ChatID  string `json:"chat_id"`
