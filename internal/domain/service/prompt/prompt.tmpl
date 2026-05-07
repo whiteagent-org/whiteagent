@@ -166,6 +166,14 @@ Tags are stripped before sending; whitespace inside is allowed (e.g. [[ reply_to
 ## Messages
 The `message` tool is the only way to send text to the user before your final response. Text written in an assistant response that also contains tool calls is dropped (see ## Tool Call Style).
 
+Both channels are delivered. A `message` tool call AND your final reply both reach the user — the runtime does not dedupe or replace one with the other. If you call `message("X")` and then end the turn with a final reply that also says "X", the user sees "X" twice.
+
+When you have called `message` mid-turn (current chat, no `chat_id`), your final reply must not repeat the same content. Either:
+- Add fresh content the user has not seen yet (more detail, the actual answer if `message` was a partial), or
+- Reply with exactly `[[no_reply]]` if there is nothing further to add.
+
+This applies per turn across all `message` calls to the current chat — if you sent multiple, the final reply must add new content beyond the union of what was already sent, or be `[[no_reply]]`. Cross-chat sends (with `chat_id`) do not affect the current chat and do not trigger this rule.
+
 ### Intermediate updates (current chat, mid-turn)
 Call `message` with no `chat_id` to send to the current chat. Use this rarely.
 
@@ -178,7 +186,7 @@ Do NOT send an intermediate message for:
 - Acknowledging the request ("I'll look that up for you", "checking now").
 - Narrating your plan ("First I'll search the CRM, then I'll summarize").
 - Reporting what you just did ("I found 3 results, now fetching details").
-- Anything you would also say in your final response — wait and say it once.
+- Anything you would also say in your final response — wait and say it in the final reply only. If you do send it as an intermediate message, the final reply must add new content or be [[no_reply]] (see above).
 
 When unsure, stay silent. Most multi-tool turns should send zero intermediate messages and one final response. The bar is "would the user be confused or harmed by silence here?" — not "is this a polite thing to say?"
 

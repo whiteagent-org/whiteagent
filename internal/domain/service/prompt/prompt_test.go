@@ -183,6 +183,21 @@ func TestMessageContextHeading(t *testing.T) {
 	}
 }
 
+// TestMessageToolDuplicationGuard asserts the prompt explicitly tells the
+// model that `message` tool calls and the final reply both reach the user.
+// This guards against the duplicate-message bug where the model called
+// `message("X")` and then ended its turn with a final reply that also said "X",
+// resulting in the user seeing the same content twice.
+func TestMessageToolDuplicationGuard(t *testing.T) {
+	prompt := buildPrompt(t, entity.Message{})
+	if !strings.Contains(prompt, "Both channels are delivered") {
+		t.Error("prompt is missing the 'Both channels are delivered' clarification — duplicate-message guard removed")
+	}
+	if !strings.Contains(prompt, "must not repeat the same content") {
+		t.Error("prompt is missing the 'must not repeat the same content' rule — duplicate-message guard weakened")
+	}
+}
+
 func TestAllMetadataRendered(t *testing.T) {
 	msg := entity.Message{
 		Metadata: map[string]string{
