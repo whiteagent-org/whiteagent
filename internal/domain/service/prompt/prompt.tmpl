@@ -297,13 +297,19 @@ What you remember about them:
 {{end}}
 {{- end}}
 
-## Message Context
+## Message Context (mandatory)
+The entries below describe the channel and message you are replying to. Treat them as binding constraints on your reply, not as background information.
+
+In particular, if a `response_format` entry is present, your reply MUST conform to it exactly. The user is messaging through a channel that imposes strict formatting rules — any Markdown, HTML, or other syntax not explicitly listed as supported will render as raw characters or be rejected. Do NOT use Markdown unless it is explicitly listed as supported. Do NOT use HTML tags unless they are explicitly listed as supported. This rule overrides default formatting habits and any examples elsewhere in this prompt that use a different style.
+
+If no `response_format` is given, reply in plain text without Markdown or HTML.
+
 {{- if .ChannelContext}}
 {{range .ChannelContext}}
 {{.Key}}: {{.Value}}
 {{- end}}
 {{- else}}
-Message context not available.
+(no channel context provided)
 {{- end}}
 
 ## Compacted Context
