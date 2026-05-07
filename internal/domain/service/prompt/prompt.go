@@ -8,14 +8,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"html"
 	"log/slog"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/whiteagent-org/whiteagent/internal/app/config"
 	"github.com/whiteagent-org/whiteagent/internal/domain/entity"
@@ -88,7 +85,6 @@ type PromptBuilder struct {
 	tmpl        *template.Template
 	tools       map[string]port.ToolPlugin
 	conv        port.ConversationService
-	journals    port.JournalReader
 	summaries   port.SummaryReader
 	memory      port.MemoryReader
 	users       *identity.UserResolver
@@ -99,23 +95,27 @@ type PromptBuilder struct {
 }
 
 // NewPromptBuilder creates a PromptBuilder that uses all registered tools.
-// conv may be nil (history fetching skipped). journals may be nil (journal
-// injection skipped). memory may be nil (memory injection skipped).
-// users may be nil (user name resolution skipped). tokenBudget of 0 disables windowing.
-// skills may be nil (skills injection skipped).
-// paths provides container-side path resolution; nil uses a defensive fallback.
-func NewPromptBuilder(tools map[string]port.ToolPlugin, conv port.ConversationService, journals port.JournalReader, users *identity.UserResolver, tokenBudget int, compactionCfg *config.CompactionConfig, skills SkillLister, paths PathProvider) (*PromptBuilder, error) {
+// conv may be nil (history fetching skipped). store may be nil (memory and
+// summary injection skipped). users may be nil (user name resolution skipped).
+// tokenBudget of 0 disables windowing. skills may be nil (skills injection
+// skipped). paths provides container-side path resolution; nil uses a
+// defensive fallback.
+//
+// store is typed as port.JournalReader for backwards compatibility with the
+// runtime wiring (storePlugin satisfies it), but the journal interface itself
+// is no longer consulted -- only the SummaryReader and MemoryReader views,
+// extracted via type assertion below, are used.
+func NewPromptBuilder(tools map[string]port.ToolPlugin, conv port.ConversationService, store port.JournalReader, users *identity.UserResolver, tokenBudget int, compactionCfg *config.CompactionConfig, skills SkillLister, paths PathProvider) (*PromptBuilder, error) {
 	tmpl, err := template.New("system").Parse(promptTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("parse prompt template: %w", err)
 	}
-	// If journals also implements MemoryReader (e.g. StorePlugin), use it for memory too.
 	var mem port.MemoryReader
-	if mr, ok := journals.(port.MemoryReader); ok {
+	if mr, ok := store.(port.MemoryReader); ok {
 		mem = mr
 	}
 	var summaries port.SummaryReader
-	if sr, ok := journals.(port.SummaryReader); ok {
+	if sr, ok := store.(port.SummaryReader); ok {
 		summaries = sr
 	}
 	if paths == nil {
@@ -125,7 +125,6 @@ func NewPromptBuilder(tools map[string]port.ToolPlugin, conv port.ConversationSe
 		tmpl:        tmpl,
 		tools:       tools,
 		conv:        conv,
-		journals:    journals,
 		summaries:   summaries,
 		memory:      mem,
 		users:       users,
@@ -169,17 +168,10 @@ func (b *PromptBuilder) Build(ctx context.Context, tenant *entity.Tenant, agent 
 
 	slog.Debug("prompt.build", "stage", "system_prompt", "content", "")
 
-	// Count system prompt tokens and calculate remaining budget.
+	// Budget layout: tokenBudget = systemTokens + summaryTokens + historyBudget.
+	// History is windowed last, against whatever remains after the system prompt
+	// and (optional) compacted-context summary block.
 	systemTokens := token.Count(systemPrompt)
-	remaining := b.tokenBudget - systemTokens
-
-	if remaining <= 0 && b.tokenBudget > 0 {
-		slog.Warn("prompt.build.budget_exceeded",
-			"total_tokens", systemTokens,
-			"system_tokens", systemTokens,
-			"token_budget", b.tokenBudget,
-		)
-	}
 
 	tenantID := msg.TenantID
 	if tenantID.IsEmpty() && tenant != nil {
@@ -187,13 +179,11 @@ func (b *PromptBuilder) Build(ctx context.Context, tenant *entity.Tenant, agent 
 	}
 
 	var (
-		fullHistory   []entity.Message
 		historyMsgs   []entity.Message
 		latestSummary *entity.Summary
 	)
 	if b.conv != nil && convID != "" {
-		var err error
-		fullHistory, err = b.fetchFullHistory(ctx, convID, upToID)
+		fullHistory, err := b.fetchFullHistory(ctx, convID, upToID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("fetch history: %w", err)
 		}
@@ -204,35 +194,24 @@ func (b *PromptBuilder) Build(ctx context.Context, tenant *entity.Tenant, agent 
 		historyMsgs = trimHistoryAfterSummary(fullHistory, latestSummaryMessageID(latestSummary))
 	}
 
-	// Fetch and inject compacted context between system prompt and active history.
+	// Inject compacted context (summary of the current conversation) between
+	// system prompt and active history. Summary is scoped to convID and only
+	// exists after compaction has run for this conversation.
 	var compactedMsg *entity.Message
-	compactedJournals := []entity.JournalEntry(nil)
-	if remaining > 0 {
-		if b.journals != nil && !tenantID.IsEmpty() {
-			entries, err := b.fetchJournals(ctx, tenantID, msg, historyBoundaryTime(historyMsgs), latestSummary)
-			if err != nil {
-				slog.Warn("prompt.build.journal_fetch_error", "err", err)
-			} else {
-				compactedJournals = filterJournalsForCompactedBlock(entries, latestSummary, time.Now().UTC())
-			}
-		}
-
-		if latestSummary != nil {
-			compactedJournals = trimJournalsToBudget(compactedJournals, remaining-token.Count(renderSummaryBlock(*latestSummary)))
-		} else {
-			compactedJournals = trimJournalsToBudget(compactedJournals, remaining)
-		}
-
-		compactedSummaries := latestSummarySlice(latestSummary)
-		if len(compactedSummaries) > 0 || len(compactedJournals) > 0 {
-			content := renderCompactedBlock(convID, compactedJournals, compactedSummaries)
-			compactedMsg = &entity.Message{Role: entity.RoleSystem, Content: content}
-		}
+	summaryTokens := 0
+	if latestSummary != nil {
+		content := renderCompactedBlock(convID, *latestSummary)
+		compactedMsg = &entity.Message{Role: entity.RoleSystem, Content: content}
+		summaryTokens = countPromptFootprint([]entity.Message{*compactedMsg})
 	}
 
-	historyBudget := remaining
-	if compactedMsg != nil {
-		historyBudget -= countPromptFootprint([]entity.Message{*compactedMsg})
+	historyBudget := b.tokenBudget - systemTokens - summaryTokens
+	if b.tokenBudget > 0 && historyBudget <= 0 {
+		slog.Warn("prompt.build.budget_exceeded",
+			"system_tokens", systemTokens,
+			"summary_tokens", summaryTokens,
+			"token_budget", b.tokenBudget,
+		)
 	}
 	if b.tokenBudget > 0 {
 		historyMsgs = windowHistoryWithBudget(historyMsgs, historyBudget)
@@ -272,23 +251,17 @@ func (b *PromptBuilder) Build(ctx context.Context, tenant *entity.Tenant, agent 
 	messages = append(messages, enriched...)
 
 	historyTokens := countPromptFootprint(enriched)
-	compactedTokens := 0
-	if compactedMsg != nil {
-		compactedTokens = countPromptFootprint([]entity.Message{*compactedMsg})
-	}
-	totalTokens := systemTokens + compactedTokens + historyTokens
+	totalTokens := systemTokens + summaryTokens + historyTokens
 	compactionSignal := b.buildCompactionSignal(totalTokens, msg, historyMsgs, upToID)
 
 	slog.Debug("prompt.build.complete",
 		"token_budget", b.tokenBudget,
 		"total_tokens", totalTokens,
 		"system_tokens", systemTokens,
-		"compacted_tokens", compactedTokens,
+		"summary_tokens", summaryTokens,
 		"history_tokens", historyTokens,
 		"message_count", len(messages),
 		"history_message_count", len(enriched),
-		"summary_count", len(latestSummarySlice(latestSummary)),
-		"journal_count", len(compactedJournals),
 		"has_compacted", compactedMsg != nil,
 		"compaction_signal", compactionSignal != nil,
 	)
@@ -431,160 +404,6 @@ func buildSkillsXML(skills []entity.Skill, userHome, tenantHome string) string {
 	return xb.String()
 }
 
-// fetchWindowedHistory retrieves messages in chunks from newest to oldest,
-// groups them, computes token costs, and applies windowing.
-type historyWindowResult struct {
-	messages        []entity.Message
-	availableTokens int
-}
-
-func (b *PromptBuilder) fetchWindowedHistory(ctx context.Context, convID entity.ConversationID, budget, pressureBudget int, upToID *entity.MessageID) (historyWindowResult, error) {
-	const chunkSize = 100
-
-	var allGroups []messageGroup
-	offset := 0
-
-	for {
-		chunk, err := b.conv.GetHistory(ctx, convID, offset, chunkSize, upToID)
-		if err != nil {
-			return historyWindowResult{}, err
-		}
-		if len(chunk) == 0 {
-			break
-		}
-
-		groups := groupMessages(chunk)
-		for i := range groups {
-			groups[i].tokens = countGroupTokens(groups[i])
-		}
-		allGroups = append(allGroups, groups...)
-
-		// Estimate whether we have enough messages: sum all group tokens.
-		var totalTokens int
-		for _, g := range allGroups {
-			totalTokens += g.tokens
-		}
-		if totalTokens >= pressureBudget {
-			return historyWindowResult{
-				messages:        windowMessages(allGroups, budget),
-				availableTokens: totalTokens,
-			}, nil
-		}
-
-		if len(chunk) < chunkSize {
-			break // No more messages.
-		}
-		offset += chunkSize
-	}
-
-	var totalTokens int
-	for _, g := range allGroups {
-		totalTokens += g.tokens
-	}
-	return historyWindowResult{
-		messages:        windowMessages(allGroups, budget),
-		availableTokens: totalTokens,
-	}, nil
-}
-
-func enrichedMessagesForSignal(msgs []entity.Message) []entity.Message {
-	return enrichMessages(msgs, nil, "/messages")
-}
-
-// bestEffortHistory fetches the last 2 messages when the system prompt
-// already exceeds the token budget.
-func (b *PromptBuilder) bestEffortHistory(ctx context.Context, convID entity.ConversationID, upToID *entity.MessageID) ([]entity.Message, error) {
-	if b.conv == nil || convID == "" {
-		return nil, nil
-	}
-	msgs, err := b.conv.GetHistory(ctx, convID, 0, 2, upToID)
-	if err != nil {
-		return nil, err
-	}
-	return msgs, nil
-}
-
-// fetchJournals retrieves prior journal entries relevant to the current chat
-// or user context. Results are returned oldest-first.
-func (b *PromptBuilder) fetchJournals(ctx context.Context, tenantID entity.TenantID, msg entity.Message, beforeTime time.Time, latestSummary *entity.Summary) ([]entity.JournalEntry, error) {
-	if b.journals == nil || tenantID.IsEmpty() {
-		return nil, nil
-	}
-
-	filter := entity.JournalFilter{}
-	if latestSummary == nil && !beforeTime.IsZero() {
-		filter.BeforeTime = beforeTime
-	}
-	if !msg.ChatID.IsEmpty() {
-		filter.ChatID = msg.ChatID
-	} else if !msg.UserID.IsEmpty() {
-		filter.UserID = msg.UserID
-	}
-	entries, err := b.journals.GetJournal(ctx, tenantID, filter)
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-func historyBoundaryTime(history []entity.Message) time.Time {
-	if len(history) == 0 {
-		return time.Time{}
-	}
-	return history[0].CreatedAt
-}
-
-func filterJournalsForCompactedBlock(entries []entity.JournalEntry, latestSummary *entity.Summary, now time.Time) []entity.JournalEntry {
-	if len(entries) == 0 {
-		return nil
-	}
-	if latestSummary == nil {
-		return append([]entity.JournalEntry(nil), entries...)
-	}
-
-	cutoff := now.AddDate(0, 0, -7)
-	filtered := make([]entity.JournalEntry, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.CreatedAt.After(latestSummary.CreatedAt) {
-			continue
-		}
-		if !entry.CreatedAt.After(cutoff) {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	if len(filtered) > 10 {
-		filtered = filtered[len(filtered)-10:]
-	}
-	return filtered
-}
-
-func trimJournalsToBudget(entries []entity.JournalEntry, budget int) []entity.JournalEntry {
-	if len(entries) == 0 || budget <= 0 {
-		return nil
-	}
-
-	selected := make([]entity.JournalEntry, 0, len(entries))
-	used := 0
-	for i := len(entries) - 1; i >= 0; i-- {
-		cost := token.Count(renderJournalBlock(entries[i]))
-		if used+cost > budget {
-			break
-		}
-		used += cost
-		selected = append(selected, entries[i])
-	}
-	slices.Reverse(selected)
-	return selected
-}
-
-func latestSummarySlice(summary *entity.Summary) []entity.Summary {
-	if summary == nil {
-		return nil
-	}
-	return []entity.Summary{*summary}
-}
-
 func windowHistoryWithBudget(history []entity.Message, budget int) []entity.Message {
 	if len(history) == 0 || budget <= 0 {
 		return nil
@@ -594,19 +413,6 @@ func windowHistoryWithBudget(history []entity.Message, budget int) []entity.Mess
 		groups[i].tokens = countGroupTokens(groups[i])
 	}
 	return windowMessages(groups, budget)
-}
-
-func renderJournalBlock(entry entity.JournalEntry) string {
-	var buf strings.Builder
-	buf.WriteString("<journal_entry")
-	buf.WriteString(fmt.Sprintf(` category="%s"`, html.EscapeString(entry.Category)))
-	if !entry.CreatedAt.IsZero() {
-		buf.WriteString(fmt.Sprintf(` ts="%s"`, util.FormatTimestampUTC(entry.CreatedAt)))
-	}
-	buf.WriteString(">\n")
-	buf.WriteString(html.EscapeString(entry.Content))
-	buf.WriteString("\n</journal_entry>\n")
-	return buf.String()
 }
 
 func renderSummaryBlock(summary entity.Summary) string {
@@ -624,9 +430,10 @@ func renderSummaryBlock(summary entity.Summary) string {
 	return xb.String()
 }
 
-// renderCompactedBlock formats summaries and journal entries as a single
-// compacted-context XML system-role content block.
-func renderCompactedBlock(convID entity.ConversationID, entries []entity.JournalEntry, summaries []entity.Summary) string {
+// renderCompactedBlock wraps the latest conversation summary in a
+// <wa_compacted_context> XML system-role content block. It is rendered only
+// when compaction has produced a summary for the current convID.
+func renderCompactedBlock(convID entity.ConversationID, summary entity.Summary) string {
 	var buf strings.Builder
 	buf.WriteString("<wa_compacted_context")
 	if convID != "" {
@@ -635,19 +442,10 @@ func renderCompactedBlock(convID entity.ConversationID, entries []entity.Journal
 		buf.WriteString(`"`)
 	}
 	buf.WriteString(">\n")
-	for _, summary := range summaries {
-		rendered := renderSummaryBlock(summary)
-		buf.WriteString(rendered)
-		if !strings.HasSuffix(rendered, "\n") {
-			buf.WriteByte('\n')
-		}
-	}
-	for _, entry := range entries {
-		rendered := renderJournalBlock(entry)
-		buf.WriteString(rendered)
-		if !strings.HasSuffix(rendered, "\n") {
-			buf.WriteByte('\n')
-		}
+	rendered := renderSummaryBlock(summary)
+	buf.WriteString(rendered)
+	if !strings.HasSuffix(rendered, "\n") {
+		buf.WriteByte('\n')
 	}
 	buf.WriteString("</wa_compacted_context>\n")
 	return buf.String()

@@ -3,7 +3,6 @@ package prompt
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -626,25 +625,26 @@ func TestReactionToolFilteredByCapabilities(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Journal injection tests
+// Compacted context (current-conversation summary) injection tests
 // ---------------------------------------------------------------------------
 
-type mockJournalReader struct {
-	entries              []entity.JournalEntry
+// mockStoreReader stubs the store dependency that NewPromptBuilder consumes
+// via type assertion. Only GetJournal is required by the formal parameter
+// type (port.JournalReader); journals are no longer auto-injected and the
+// method should never be called from Build().
+type mockStoreReader struct {
 	latestSummary        *entity.Summary
-	filter               entity.JournalFilter // captured for assertions
-	called               bool
+	journalCalled        bool
 	latestCalled         bool
 	latestConversationID entity.ConversationID
 }
 
-func (m *mockJournalReader) GetJournal(_ context.Context, _ entity.TenantID, f entity.JournalFilter) ([]entity.JournalEntry, error) {
-	m.called = true
-	m.filter = f
-	return m.entries, nil
+func (m *mockStoreReader) GetJournal(_ context.Context, _ entity.TenantID, _ entity.JournalFilter) ([]entity.JournalEntry, error) {
+	m.journalCalled = true
+	return nil, nil
 }
 
-func (m *mockJournalReader) GetLatestSummary(_ context.Context, _ entity.TenantID, convID entity.ConversationID) (*entity.Summary, error) {
+func (m *mockStoreReader) GetLatestSummary(_ context.Context, _ entity.TenantID, convID entity.ConversationID) (*entity.Summary, error) {
 	m.latestCalled = true
 	m.latestConversationID = convID
 	if m.latestSummary == nil {
@@ -654,22 +654,26 @@ func (m *mockJournalReader) GetLatestSummary(_ context.Context, _ entity.TenantI
 	return &summary, nil
 }
 
-func TestJournalInjection(t *testing.T) {
-	baseTime := time.Now().UTC().Add(-30 * time.Minute)
-	journals := &mockJournalReader{
-		entries: []entity.JournalEntry{
-			{Category: "Decisions", Content: "User prefers dark mode", CreatedAt: baseTime.Add(15 * time.Minute)},
-			{Category: "Key Events", Content: "Deployed v2", CreatedAt: baseTime.Add(20 * time.Minute)},
+// TestSummaryInjectedWhenPresent asserts that when GetLatestSummary returns a
+// summary for the current convID, it appears in the compacted-context block
+// between the system prompt and the active history.
+func TestSummaryInjectedWhenPresent(t *testing.T) {
+	baseTime := time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC)
+	store := &mockStoreReader{
+		latestSummary: &entity.Summary{
+			ID:        "sum-1",
+			Content:   "## Goals\nConversation summary",
+			MessageID: "msg-1",
+			CreatedAt: baseTime.Add(5 * time.Minute),
 		},
-		latestSummary: &entity.Summary{ID: "sum-1", Content: "## Goals\nConversation summary", MessageID: "msg-1", CreatedAt: baseTime.Add(5 * time.Minute)},
 	}
 	history := []entity.Message{
-		{ID: "msg-1", Role: entity.RoleUser, Content: "hello", CreatedAt: baseTime},
-		{ID: "msg-2", Role: entity.RoleAssistant, Content: "hi there", CreatedAt: baseTime.Add(time.Minute)},
-		{ID: "msg-3", Role: entity.RoleUser, Content: "follow up", CreatedAt: baseTime.Add(2 * time.Minute)},
+		{ID: "msg-1", Role: entity.RoleUser, Content: "covered hello", CreatedAt: baseTime},
+		{ID: "msg-2", Role: entity.RoleAssistant, Content: "covered hi", CreatedAt: baseTime.Add(time.Minute)},
+		{ID: "msg-3", Role: entity.RoleUser, Content: "active follow up", CreatedAt: baseTime.Add(10 * time.Minute)},
 	}
 	mock := &mockConvService{history: history}
-	pb, err := NewPromptBuilder(nil, mock, journals, nil, 32000, nil, nil, nil)
+	pb, err := NewPromptBuilder(nil, mock, store, nil, 32000, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPromptBuilder: %v", err)
 	}
@@ -677,39 +681,64 @@ func TestJournalInjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	// Expect: [system, compacted, assistant, user]
-	if len(msgs) < 3 {
-		t.Fatalf("expected at least 3 messages, got %d", len(msgs))
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(msgs))
 	}
 	if msgs[1].Role != entity.RoleSystem {
 		t.Errorf("msgs[1] role = %q, want system", msgs[1].Role)
 	}
 	if !strings.Contains(msgs[1].Content, "<wa_compacted_context") {
-		t.Errorf("msgs[1] should contain <wa_compacted_context, got: %s", msgs[1].Content[:min(100, len(msgs[1].Content))])
-	}
-	if !strings.Contains(msgs[1].Content, "User prefers dark mode") {
-		t.Error("journal content missing")
-	}
-	if !strings.Contains(msgs[1].Content, "Deployed v2") {
-		t.Error("second journal entry content missing")
+		t.Errorf("msgs[1] should contain <wa_compacted_context, got: %s", msgs[1].Content[:min(120, len(msgs[1].Content))])
 	}
 	if !strings.Contains(msgs[1].Content, "<summary") {
 		t.Error("summary block missing")
 	}
-	if strings.Index(msgs[1].Content, "<summary") > strings.Index(msgs[1].Content, `<journal_entry category="Decisions"`) {
-		t.Error("summary should render before journal entries")
-	}
-	if strings.Contains(msgs[1].Content, "hello") {
-		t.Error("messages covered by summary should not remain in active history")
-	}
 	if !strings.Contains(msgs[1].Content, "Conversation summary") {
 		t.Error("summary content missing")
 	}
+	if strings.Contains(msgs[1].Content, "<journal_entry") {
+		t.Error("compacted context should not contain journal entries -- they are no longer auto-injected")
+	}
+	if store.journalCalled {
+		t.Error("Build() must not call GetJournal -- journal entries are not auto-injected")
+	}
 }
 
-func TestCompactedContextDoesNotTrimHistory(t *testing.T) {
-	// With no compacted context present, the full raw history should fit when the
-	// remaining shared budget is large enough.
+// TestNoCompactedContextWhenSummaryAbsent asserts that a fresh conversation
+// (no summary yet) starts clean: only system prompt + history, no compacted block.
+func TestNoCompactedContextWhenSummaryAbsent(t *testing.T) {
+	history := []entity.Message{
+		{Role: entity.RoleUser, Content: "hello", CreatedAt: time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC)},
+	}
+	mock := &mockConvService{history: history}
+	store := &mockStoreReader{}
+	pb, _ := NewPromptBuilder(nil, mock, store, nil, 32000, nil, nil, nil)
+	msgs, _, err := pb.Build(context.Background(), nil, nil, nil, entity.Message{TenantID: "tenant-1", ChatID: "chat-1"}, "conv-fresh", port.ChannelCapabilities{}, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for i, m := range msgs {
+		if i > 0 && strings.Contains(m.Content, "<wa_compacted_context") {
+			t.Errorf("msgs[%d] unexpectedly contains compacted context for a fresh convID", i)
+		}
+		if i > 0 && m.Role == entity.RoleSystem {
+			t.Errorf("msgs[%d] is an unexpected system message; only the initial system prompt should remain", i)
+		}
+	}
+	if !store.latestCalled {
+		t.Error("expected GetLatestSummary to be called to check for a current-convID summary")
+	}
+	if store.latestConversationID != "conv-fresh" {
+		t.Errorf("GetLatestSummary called with convID %q, want %q", store.latestConversationID, "conv-fresh")
+	}
+	if store.journalCalled {
+		t.Error("Build() must not call GetJournal -- journals are no longer auto-injected")
+	}
+}
+
+// TestFullHistoryFitsWhenNoCompactedContext asserts that without a summary
+// the entire raw history fits as long as the budget allows.
+func TestFullHistoryFitsWhenNoCompactedContext(t *testing.T) {
 	filler := strings.Repeat("x", 400)
 	baseTime := time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC)
 	var history []entity.Message
@@ -726,12 +755,12 @@ func TestCompactedContextDoesNotTrimHistory(t *testing.T) {
 	}
 
 	mockConv := &mockConvService{history: history}
-	journals := &mockJournalReader{entries: nil}
-	pbSplit, _ := NewPromptBuilder(nil, mockConv, journals, nil, 9000, nil, nil, nil)
-	msgsSplit, _, _ := pbSplit.Build(context.Background(), nil, nil, nil, entity.Message{TenantID: "tenant-1", ChatID: "chat-1"}, "conv-1", port.ChannelCapabilities{}, nil)
+	store := &mockStoreReader{}
+	pb, _ := NewPromptBuilder(nil, mockConv, store, nil, 9000, nil, nil, nil)
+	msgs, _, _ := pb.Build(context.Background(), nil, nil, nil, entity.Message{TenantID: "tenant-1", ChatID: "chat-1"}, "conv-1", port.ChannelCapabilities{}, nil)
 
 	historyCount := 0
-	for _, msg := range msgsSplit {
+	for _, msg := range msgs {
 		if msg.Role != entity.RoleSystem {
 			historyCount++
 		}
@@ -741,79 +770,29 @@ func TestCompactedContextDoesNotTrimHistory(t *testing.T) {
 	}
 }
 
-func TestJournalFiltering(t *testing.T) {
-	baseTime := time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC)
-	journals := &mockJournalReader{entries: nil}
-	history := []entity.Message{
-		{Role: entity.RoleUser, Content: "old message", CreatedAt: baseTime},
-		{Role: entity.RoleAssistant, Content: "reply", CreatedAt: baseTime.Add(time.Minute)},
-		{Role: entity.RoleUser, Content: "new message", CreatedAt: baseTime.Add(2 * time.Minute)},
-	}
-	mock := &mockConvService{history: history}
-	pb, _ := NewPromptBuilder(nil, mock, journals, nil, 32000, nil, nil, nil)
-	_, _, _ = pb.Build(context.Background(), nil, nil, nil, entity.Message{TenantID: "tenant-1", ChatID: "chat-filter"}, "conv-filter", port.ChannelCapabilities{}, nil)
+// TestSummaryScopedToCurrentConvID asserts that the summary lookup uses the
+// current convID -- the per-convID scoping that makes new conversations
+// start clean.
+func TestSummaryScopedToCurrentConvID(t *testing.T) {
+	store := &mockStoreReader{}
+	mock := &mockConvService{history: nil}
+	pb, _ := NewPromptBuilder(nil, mock, store, nil, 32000, nil, nil, nil)
+	_, _, _ = pb.Build(context.Background(), nil, nil, nil, entity.Message{TenantID: "tenant-1", ChatID: "chat-1"}, "conv-xyz", port.ChannelCapabilities{}, nil)
 
-	if !journals.called {
-		t.Fatal("journal reader was not called")
+	if !store.latestCalled {
+		t.Fatal("expected GetLatestSummary to be called")
 	}
-	if journals.filter.ChatID != "chat-filter" {
-		t.Errorf("filter.ChatID = %q, want chat-filter", journals.filter.ChatID)
-	}
-	// BeforeTime should be the current conversation start time.
-	if journals.filter.BeforeTime != baseTime {
-		t.Errorf("filter.BeforeTime = %v, want %v", journals.filter.BeforeTime, baseTime)
+	if store.latestConversationID != "conv-xyz" {
+		t.Errorf("GetLatestSummary convID = %q, want %q", store.latestConversationID, "conv-xyz")
 	}
 }
 
-func TestSummaryScopedJournalsKeepNewestTenFromLastWeek(t *testing.T) {
-	baseTime := time.Date(2026, 4, 6, 12, 0, 0, 0, time.UTC)
-	entries := make([]entity.JournalEntry, 0, 14)
-	for i := 0; i < 12; i++ {
-		entries = append(entries, entity.JournalEntry{
-			Category:  "Decisions",
-			Content:   fmt.Sprintf("recent-%02d", i),
-			CreatedAt: baseTime.Add(-time.Duration(12-i) * time.Hour),
-		})
-	}
-	entries = append(entries,
-		entity.JournalEntry{Category: "Decisions", Content: "too-old", CreatedAt: baseTime.AddDate(0, 0, -8)},
-		entity.JournalEntry{Category: "Decisions", Content: "covered-by-summary", CreatedAt: baseTime.Add(-5 * 24 * time.Hour)},
-	)
-
-	journals := &mockJournalReader{
-		entries:       entries,
-		latestSummary: &entity.Summary{ID: "sum-1", MessageID: "msg-2", Content: "latest summary", CreatedAt: baseTime.Add(-4 * 24 * time.Hour)},
-	}
-	history := []entity.Message{
-		{ID: "msg-1", Role: entity.RoleUser, Content: "covered user", CreatedAt: baseTime.Add(-5 * 24 * time.Hour)},
-		{ID: "msg-2", Role: entity.RoleAssistant, Content: "covered assistant", CreatedAt: baseTime.Add(-4 * 24 * time.Hour)},
-		{ID: "msg-3", Role: entity.RoleUser, Content: "active user", CreatedAt: baseTime.Add(-2 * time.Hour)},
-	}
-
-	pb, _ := NewPromptBuilder(nil, &mockConvService{history: history}, journals, nil, 32000, nil, nil, nil)
-	msgs, _, err := pb.Build(context.Background(), nil, nil, nil, entity.Message{TenantID: "tenant-1", ChatID: "chat-1"}, "conv-summary", port.ChannelCapabilities{}, nil)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	rendered := msgs[1].Content
-	if strings.Contains(rendered, "too-old") || strings.Contains(rendered, "covered-by-summary") {
-		t.Fatal("summary-scoped compacted context should exclude journals outside the 7-day window or at/before the summary timestamp")
-	}
-	if strings.Contains(rendered, "recent-00") || strings.Contains(rendered, "recent-01") {
-		t.Fatal("summary-scoped compacted context should keep only the newest 10 journal entries")
-	}
-	for i := 2; i < 12; i++ {
-		want := fmt.Sprintf("recent-%02d", i)
-		if !strings.Contains(rendered, want) {
-			t.Fatalf("expected compacted context to retain %q", want)
-		}
-	}
-}
-
+// TestSummaryBoundaryTrimsCoveredMessages asserts that messages whose ID is
+// at or before the summary's MessageID are removed from active history while
+// messages after the boundary remain.
 func TestSummaryBoundaryTrimsCoveredMessages(t *testing.T) {
 	baseTime := time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC)
-	store := &mockJournalReader{
+	store := &mockStoreReader{
 		latestSummary: &entity.Summary{ID: "sum-2", Content: "latest summary", MessageID: "msg-2", CreatedAt: baseTime.Add(10 * time.Minute)},
 	}
 	history := []entity.Message{
@@ -854,7 +833,9 @@ func TestSummaryBoundaryTrimsCoveredMessages(t *testing.T) {
 	}
 }
 
-func TestJournalNilReader(t *testing.T) {
+// TestNilStoreReaderProducesCleanPrompt asserts that a nil store still
+// yields a working prompt with no compacted-context system message.
+func TestNilStoreReaderProducesCleanPrompt(t *testing.T) {
 	history := []entity.Message{
 		{Role: entity.RoleUser, Content: "hello", CreatedAt: time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC)},
 	}
@@ -864,70 +845,10 @@ func TestJournalNilReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	// Should be [system, user] -- no journal message.
 	for i, m := range msgs {
 		if i > 0 && m.Role == entity.RoleSystem {
-			t.Error("unexpected system message (journal) when journals is nil")
+			t.Error("unexpected system message when store is nil")
 		}
-	}
-}
-
-func TestJournalEmptyHistory(t *testing.T) {
-	journals := &mockJournalReader{entries: []entity.JournalEntry{
-		{Category: "Test", Content: "should not appear"},
-	}}
-	mock := &mockConvService{history: nil}
-	pb, _ := NewPromptBuilder(nil, mock, journals, nil, 32000, nil, nil, nil)
-	msgs, _, _ := pb.Build(context.Background(), nil, nil, nil, entity.Message{TenantID: "tenant-1", ChatID: "chat-empty"}, "conv-empty", port.ChannelCapabilities{}, nil)
-	if !journals.called {
-		t.Error("journal reader should still be called so journals can form compacted context without raw history")
-	}
-	if len(msgs) != 2 {
-		t.Errorf("expected system prompt plus compacted context, got %d messages", len(msgs))
-	}
-	if len(msgs) > 1 && !strings.Contains(msgs[1].Content, "should not appear") {
-		t.Error("expected journal-only compacted context when history is empty")
-	}
-}
-
-func TestJournalBudgetTrimming(t *testing.T) {
-	baseTime := time.Now().UTC().Add(-30 * time.Minute)
-	// Create large journal entries that cannot all fit beside the system prompt.
-	bigContent := strings.Repeat("y", 1200)
-	journals := &mockJournalReader{
-		entries: []entity.JournalEntry{
-			{Category: "Old", Content: bigContent, CreatedAt: baseTime.Add(-30 * time.Minute)},
-			{Category: "Mid", Content: bigContent, CreatedAt: baseTime.Add(-20 * time.Minute)},
-			{Category: "New", Content: bigContent, CreatedAt: baseTime.Add(-10 * time.Minute)},
-		},
-	}
-	history := []entity.Message{
-		{Role: entity.RoleUser, Content: "hi", CreatedAt: baseTime},
-	}
-	mock := &mockConvService{history: history}
-	// With shared budgeting, the newest journals should survive while the oldest is dropped.
-	// Budget must be tight enough that 3 large journals + system prompt cannot fit, but 2 can.
-	// System prompt ~3950 tokens; each journal entry ~350 tokens; we need room for 2 but not 3.
-	pb, _ := NewPromptBuilder(nil, mock, journals, nil, 4700, nil, nil, nil)
-	msgs, _, _ := pb.Build(context.Background(), nil, nil, nil, entity.Message{TenantID: "tenant-1", ChatID: "chat-trim"}, "conv-trim", port.ChannelCapabilities{}, nil)
-
-	// Find the journal message (skip system prompt at index 0).
-	var journalContent string
-	for i, m := range msgs {
-		if i > 0 && strings.Contains(m.Content, "<wa_compacted_context") {
-			journalContent = m.Content
-			break
-		}
-	}
-	if journalContent == "" {
-		t.Fatal("no journal message found")
-	}
-	// Newest entry should be present, oldest should be trimmed.
-	if !strings.Contains(journalContent, `category="New"`) {
-		t.Error("newest journal entry should be kept")
-	}
-	if strings.Contains(journalContent, `category="Old"`) {
-		t.Error("oldest journal entry should be trimmed")
 	}
 }
 

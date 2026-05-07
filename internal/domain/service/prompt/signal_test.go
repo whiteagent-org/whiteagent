@@ -179,7 +179,7 @@ func TestCompactionSignalEmittedWithoutHistoryTruncation(t *testing.T) {
 		t.Fatalf("test setup invalid: full footprint %d does not exceed threshold %.2f of budget %d", fullFootprint, threshold, tokenBudget)
 	}
 
-	pb, err := NewPromptBuilder(nil, conv, &mockJournalReader{}, nil, tokenBudget, &config.CompactionConfig{Model: "compact", Threshold: threshold}, nil, nil)
+	pb, err := NewPromptBuilder(nil, conv, &mockStoreReader{}, nil, tokenBudget, &config.CompactionConfig{Model: "compact", Threshold: threshold}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewPromptBuilder: %v", err)
 	}

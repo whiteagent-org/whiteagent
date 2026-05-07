@@ -59,9 +59,11 @@ func TestGroupConversationBehaviorGuidanceText(t *testing.T) {
 // Context-aware memory tests (GMEM-03, GMEM-04, GMEM-05)
 // ---------------------------------------------------------------------------
 
-// mockMemoryStore implements both JournalReader and MemoryReader for testing.
+// mockMemoryStore implements the store contract that NewPromptBuilder
+// consumes (JournalReader for the formal parameter, plus MemoryReader and
+// SummaryReader via type assertion).
 type mockMemoryStore struct {
-	mockJournalReader
+	mockStoreReader
 	memory      *entity.Memory
 	memoryOwner string // captured ownerType:ownerID for assertions
 }
